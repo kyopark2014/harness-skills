@@ -364,22 +364,6 @@ def upload_skills_to_s3(s3_bucket_name: str) -> int:
         logger.warning(f"Skills directory not found: {SKILLS_DIR}; skipping upload")
         return 0
 
-    prefix = f"{SKILLS_S3_PREFIX}/"
-    try:
-        existing = s3_client.list_objects_v2(
-            Bucket=s3_bucket_name,
-            Prefix=prefix,
-            MaxKeys=1,
-        )
-        if existing.get("KeyCount", 0) > 0 or existing.get("Contents"):
-            logger.warning(
-                f"Skills already exist at s3://{s3_bucket_name}/{prefix}; skipping upload"
-            )
-            return 0
-    except ClientError as e:
-        logger.error(f"Failed to check existing skills prefix: {e}")
-        raise
-
     uploaded = 0
     failed = 0
     for root, dirs, files in os.walk(SKILLS_DIR):
@@ -647,6 +631,17 @@ def create_harness_execution_role() -> str:
                 "Action": ["s3:GetObject"],
                 "Resource": [f"arn:aws:s3:::{_bucket_name()}/*"],
             },
+            # s3-sharing skill: put_object for CloudFront download URLs
+            {
+                "Sid": "AgentCoreSharingS3PutObject",
+                "Effect": "Allow",
+                "Action": ["s3:PutObject"],
+                "Resource": [
+                    f"arn:aws:s3:::{_bucket_name()}/artifacts/*",
+                    f"arn:aws:s3:::{_bucket_name()}/images/*",
+                    f"arn:aws:s3:::{_bucket_name()}/docs/*",
+                ],
+            },
         ],
     }
     attach_inline_policy(
@@ -877,6 +872,10 @@ BASE_SYSTEM_PROMPT = (
     "모르는 질문을 받으면 솔직히 모른다고 말합니다.\n"
     "한국어로 답변하세요.\n"
     "\n"
+    "생성된 artifact(PDF, DOCX, PNG, CSV 등)를 사용자에게 공유하거나 다운로드 링크를 제공할 때는 "
+    "반드시 s3-sharing SKILL을 사용하세요. "
+    "로컬 경로만 알려주지 말고, 해당 스킬로 S3에 업로드한 뒤 CloudFront 공유 URL을 전달하세요.\n"
+    "\n"
     "An agent orchestrates the following workflow:\n"
     "1. Receives user input\n"
     "2. Processes the input using a language model\n"
@@ -1009,10 +1008,50 @@ def ensure_harness_environment(
     agentcore_control_client.update_harness(
         harnessId=harness_id,
         environment=desired,
-        environmentVariables={
-            "LOG_LEVEL": "info",
-            "SESSION_STORAGE_DIR": s3_files_vpc.SESSION_STORAGE_MOUNT_PATH,
-        },
+        environmentVariables=_harness_environment_variables(),
+    )
+
+
+def _harness_environment_variables(
+    *,
+    s3_bucket_name: str | None = None,
+    sharing_url: str | None = None,
+) -> Dict[str, str]:
+    """Env vars for Harness runtime (session storage + s3-sharing skill)."""
+    env: Dict[str, str] = {
+        "LOG_LEVEL": "info",
+        "SESSION_STORAGE_DIR": s3_files_vpc.SESSION_STORAGE_MOUNT_PATH,
+    }
+    bucket = s3_bucket_name or _bucket_name()
+    if bucket:
+        env["S3_BUCKET"] = bucket
+    if sharing_url:
+        env["SHARING_URL"] = sharing_url.rstrip("/")
+    return env
+
+
+def ensure_harness_sharing_env(
+    harness_id: str,
+    s3_bucket_name: str,
+    sharing_url: str,
+) -> None:
+    """Inject S3_BUCKET / SHARING_URL for the s3-sharing skill."""
+    if not harness_id or not s3_bucket_name:
+        return
+    url = (sharing_url or "").rstrip("/")
+    if not url:
+        logger.warning("  SHARING_URL empty; s3-sharing will fall back to console URLs")
+    env_vars = _harness_environment_variables(
+        s3_bucket_name=s3_bucket_name,
+        sharing_url=url or None,
+    )
+    logger.info(
+        f"  Updating harness env for s3-sharing: "
+        f"S3_BUCKET={s3_bucket_name}, SHARING_URL={url or '(none)'}"
+    )
+    agentcore_control_client.update_harness(
+        harnessId=harness_id,
+        environmentVariables=env_vars,
     )
 
 
@@ -1134,10 +1173,7 @@ def create_or_get_harness(
                 maxTokens=50000,
                 timeoutSeconds=300,
                 environment=environment,
-                environmentVariables={
-                    "LOG_LEVEL": "info",
-                    "SESSION_STORAGE_DIR": s3_files_vpc.SESSION_STORAGE_MOUNT_PATH,
-                },
+                environmentVariables=_harness_environment_variables(),
                 tags={"Project": project_name, "Env": "dev"},
             )
             harness_id = response["harness"]["harnessId"]
@@ -1297,6 +1333,11 @@ def main():
             s3_files_info=s3_files_info,
         )
         cloudfront_info = create_cloudfront_distribution(s3_bucket_name)
+        ensure_harness_sharing_env(
+            harness_info["harness_id"],
+            s3_bucket_name,
+            f"https://{cloudfront_info.get('domain', '')}",
+        )
         deployment_success = True
 
         elapsed_time = time.time() - start_time

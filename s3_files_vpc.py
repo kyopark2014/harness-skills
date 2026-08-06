@@ -658,13 +658,27 @@ class S3FilesVpcProvisioner:
                 },
             ],
         }
+        policy_name = f"s3files-harness-policy-for-{self.project_name}"[:128]
+        policy_existed = False
+        try:
+            self.iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)
+            policy_existed = True
+        except self.iam.exceptions.NoSuchEntityException:
+            pass
+
         self.iam.put_role_policy(
             RoleName=role_name,
-            PolicyName=f"s3files-harness-policy-for-{self.project_name}"[:128],
+            PolicyName=policy_name,
             PolicyDocument=json.dumps(policy),
         )
         self.logger.info(f"  ✓ Attached S3 Files client policy to {role_name}")
-        # CreateHarness validates s3files:GetAccessPoint immediately; wait for IAM.
+        # CreateHarness validates s3files:GetAccessPoint immediately; wait only
+        # when the inline policy is brand-new (existing roles are already propagated).
+        if policy_existed:
+            self.logger.info(
+                "  Skipping IAM wait (S3 Files client policy already on role)"
+            )
+            return
         wait_seconds = 20
         self.logger.info(
             f"  Waiting {wait_seconds}s for execution-role IAM propagation "

@@ -190,11 +190,15 @@ skills/
 ├── docx/                 # Anthropic git skill (이름만으로 git URL 매핑)
 │   └── SKILL.md
 ├── pptx/ pdf/ xlsx/
-└── korea-weather/        # 커스텀 → S3 URI로 전달
+├── korea-weather/        # 커스텀 → S3 URI로 전달
+│   ├── SKILL.md
+│   └── scripts/
+│       ├── get_weather.py
+│       └── recall_home_location.py
+└── s3-sharing/           # 산출물 S3 업로드 + CloudFront 공유 URL
     ├── SKILL.md
     └── scripts/
-        ├── get_weather.py
-        └── recall_home_location.py
+        └── upload_file_to_s3.py
 ```
 
 각 스킬은 Anthropic Agent Skills 스펙의 `SKILL.md`(YAML frontmatter + 본문)를 가집니다.
@@ -261,6 +265,7 @@ Harness 런타임에서 S3 스킬은 보통 다음 경로에 마운트됩니다.
 
 ```text
 /home/.agents/skills/s3/korea-weather/scripts/get_weather.py
+/home/.agents/skills/s3/s3-sharing/scripts/upload_file_to_s3.py
 ```
 
 커스텀 스킬의 `SKILL.md`에는 **이 절대 경로**를 안내하세요. `$WORKING_DIR/skills/...`는 Harness S3 마운트에 없습니다.
