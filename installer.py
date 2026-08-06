@@ -1055,6 +1055,23 @@ def ensure_harness_sharing_env(
     )
 
 
+def ensure_harness_system_prompt(harness_id: str) -> None:
+    """Keep CreateHarness systemPrompt in sync on re-install."""
+    if not harness_id:
+        return
+    desired = [{"text": BASE_SYSTEM_PROMPT}]
+    h = agentcore_control_client.get_harness(harnessId=harness_id)["harness"]
+    current = h.get("systemPrompt") or []
+    if current == desired:
+        logger.info("  Harness systemPrompt already up to date")
+        return
+    logger.info(f"  Updating harness systemPrompt (harnessId={harness_id})")
+    agentcore_control_client.update_harness(
+        harnessId=harness_id,
+        systemPrompt=desired,
+    )
+
+
 def create_or_get_harness(
     execution_role_arn: str,
     agent_memory_arn: str,
@@ -1196,6 +1213,7 @@ def create_or_get_harness(
 
     ensure_harness_memory_binding(harness_id, agent_memory_arn)
     ensure_harness_environment(harness_id, environment)
+    ensure_harness_system_prompt(harness_id)
     harness_arn = wait_for_harness_ready(harness_id)
 
     return {
