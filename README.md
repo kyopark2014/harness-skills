@@ -16,6 +16,7 @@ AgentCore의 관리형 에이전트 하네스(Managed Agent Harness)는 사전 �
 - **모델**: 사이드바 선택 → `model.bedrockModelConfig`로 호출마다 override
 - **채팅 첨부**: `+` 버튼으로 이미지(사진·화면 캡처) 첨부, 문서 RAG 업로드
 - **Knowledge Base**: S3 Vectors 기반 Bedrock KB (`docs/` 인제스션)
+- **Knowledge Graph**: 채팅 이력(`tasks.db`)에서 엔티티·관계를 추출해 사용자별 인터랙티브 HTML로 표시 (사이드바 브랜드 클릭)
 
 AWS 오픈소스 에이전트 프레임워크 [Strands Agents](https://strandsagents.com/docs/user-guide/quickstart/python/)로 구동됩니다.
 
@@ -568,6 +569,19 @@ response = client.invoke_harness(**invoke_kwargs)
 
 ---
 
+## Knowledge Graph
+
+채팅 이력을 Graphify 스타일 지식 그래프로 만듭니다. 상세는 [`graph/README.md`](./graph/README.md)를 참고하세요.
+
+| 항목 | 내용 |
+|------|------|
+| 트리거 | 로그인 / 세션 복원 / 채팅 완료 / Settings에서 KG ON |
+| UI | 사이드바 브랜드 클릭 → `GET /api/graph` iframe |
+| 파이프라인 | `tasks.db` → corpus → LLM 추출 → `graph.html` |
+| CLI | `cd graph && python run_pipeline.py --user <id>` |
+
+---
+
 ## 저장소 구조
 
 | 경로 | 역할 |
@@ -576,8 +590,10 @@ response = client.invoke_harness(**invoke_kwargs)
 | `uninstaller.py` | 위 리소스 삭제 및 config 정리 |
 | `s3_files_vpc.py` | VPC / S3 Files / harness `environment` 빌더 |
 | `skills/` | 로컬 스킬 소스 (→ S3 `skills/` 또는 Git) |
+| `graph/` | 채팅 이력 → Knowledge Graph 파이프라인 (`run_pipeline.py`) |
 | `application/server.py` | FastAPI + React SPA (`application/web`) |
-| `application/api/` | 세션 · 설정 · 태스크 · **파일/RAG 업로드** · SSE 채팅 API |
+| `application/api/` | 세션 · 설정 · 태스크 · **파일/RAG 업로드** · SSE 채팅 · **graph** API |
+| `application/graph_jobs.py` | 로그인/채팅 후 백그라운드 그래프 추출 잡 |
 | `application/services/rag_service.py` | RAG 업로드 + KB 인제스션 |
 | `application/agentcore_client.py` | `run_harness` / 비전 요약 / `invoke_harness` 스트림 |
 | `application/skill.py` | 스킬 발견 + `build_harness_skills` |

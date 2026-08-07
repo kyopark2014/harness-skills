@@ -13,6 +13,7 @@ from application.api.routes_tasks import router as tasks_router
 from application.api.routes_chat import router as chat_router
 from application.api.routes_files import router as files_router
 from application.api.routes_rag import router as rag_router
+from application.api.routes_graph import router as graph_router
 from application.task_store import init_db
 
 logging.basicConfig(
@@ -41,6 +42,7 @@ app.include_router(tasks_router)
 app.include_router(chat_router)
 app.include_router(files_router)
 app.include_router(rag_router)
+app.include_router(graph_router)
 
 
 @app.get("/api/health")
