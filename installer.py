@@ -2951,6 +2951,36 @@ def _find_cognito_user_pool_id(pool_name: str) -> Optional[str]:
             return None
 
 
+def _cognito_pool_id_from_config() -> Optional[str]:
+    """Return cognito_user_pool_id from application/config.json if present."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        pool_id = (config.get("cognito_user_pool_id") or "").strip()
+        return pool_id or None
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _cognito_user_pool_exists(user_pool_id: str) -> bool:
+    try:
+        cognito_idp_client.describe_user_pool(UserPoolId=user_pool_id)
+        return True
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("ResourceNotFoundException", "UserPoolNotFoundException"):
+            return False
+        raise
+
+
+def _resolve_cognito_user_pool_id(pool_name: Optional[str] = None) -> Optional[str]:
+    """Prefer a live config.json pool id, then list User Pools by project name."""
+    pool_id = _cognito_pool_id_from_config()
+    if pool_id and _cognito_user_pool_exists(pool_id):
+        return pool_id
+    return _find_cognito_user_pool_id(pool_name or project_name)
+
+
 def _find_cognito_client_id(user_pool_id: str, client_name: str) -> Optional[str]:
     next_token = None
     while True:
@@ -3017,7 +3047,8 @@ def _cognito_admin_exists(user_pool_id: str, username: str) -> bool:
         cognito_idp_client.admin_get_user(UserPoolId=user_pool_id, Username=username)
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "UserNotFoundException":
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("UserNotFoundException", "ResourceNotFoundException"):
             return False
         raise
 
@@ -3047,7 +3078,7 @@ def create_cognito_user_pool(
     """
     logger.info("Creating Cognito User Pool for Web UI authentication")
     pool_name = project_name
-    user_pool_id = _find_cognito_user_pool_id(pool_name)
+    user_pool_id = _resolve_cognito_user_pool_id(pool_name)
 
     if user_pool_id:
         logger.info(f"  ✓ Reusing Cognito User Pool: {user_pool_id} (name={pool_name})")
@@ -3097,7 +3128,8 @@ def create_cognito_user_pool(
 
     if _cognito_admin_exists(user_pool_id, COGNITO_ADMIN_USERNAME):
         logger.info(
-            f"  ✓ Cognito admin user already exists: {COGNITO_ADMIN_USERNAME}"
+            f"  ✓ Cognito admin user already exists: {COGNITO_ADMIN_USERNAME} "
+            f"— skipping password prompt"
         )
     else:
         password = admin_password or prompt_cognito_admin_password()
@@ -3382,14 +3414,17 @@ def main():
     logger.info(f"Config: {CONFIG_PATH}")
     logger.info("=" * 60)
 
-    # Ask for Cognito admin password up front (interactive only; never auto-set).
-    existing_cognito_pool_id = _find_cognito_user_pool_id(project_name)
-    need_cognito_admin_password = (
-        not existing_cognito_pool_id
-        or not _cognito_admin_exists(existing_cognito_pool_id, COGNITO_ADMIN_USERNAME)
-    )
+    # Ask for Cognito admin password up front only when admin does not exist yet.
+    existing_cognito_pool_id = _resolve_cognito_user_pool_id(project_name)
     cognito_admin_password: Optional[str] = None
-    if need_cognito_admin_password:
+    if existing_cognito_pool_id and _cognito_admin_exists(
+        existing_cognito_pool_id, COGNITO_ADMIN_USERNAME
+    ):
+        logger.info(
+            f"  ✓ Cognito admin '{COGNITO_ADMIN_USERNAME}' already exists "
+            f"(pool={existing_cognito_pool_id}) — skipping password prompt"
+        )
+    else:
         cognito_admin_password = prompt_cognito_admin_password()
         logger.info("  ✓ Cognito admin password accepted (will create admin user later)")
 
