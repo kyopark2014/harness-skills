@@ -36,6 +36,10 @@ CONFIG_PATH = os.path.join(WORKING_DIR, "application", "config.json")
 DELETE_WAIT_TIMEOUT_SEC = int(os.environ.get("AGENTCORE_DELETE_WAIT_TIMEOUT_SEC", "600"))
 DELETE_POLL_INTERVAL_SEC = float(os.environ.get("AGENTCORE_DELETE_POLL_INTERVAL_SEC", "5"))
 
+# Cognito Web UI auth (must match installer.py)
+COGNITO_CLIENT_NAME = f"{project_name}-web-ui"
+SESSION_SIGNING_KEY_SECRET_NAME = f"{project_name}/session-signing-key"
+
 sts_client = boto3.client("sts", region_name=region)
 account_id = str(sts_client.get_caller_identity()["Account"])
 
@@ -49,6 +53,8 @@ s3files_client = boto3.client("s3files", region_name=region)
 s3vectors_client = boto3.client("s3vectors", region_name=region)
 cloudfront_client = boto3.client("cloudfront", region_name=region)
 bedrock_agent_client = boto3.client("bedrock-agent", region_name=region)
+cognito_idp_client = boto3.client("cognito-idp", region_name=region)
+secretsmanager_client = boto3.client("secretsmanager", region_name=region)
 agentcore_control_client = boto3.client(
     "bedrock-agentcore-control",
     region_name=region,
@@ -1180,6 +1186,91 @@ def clear_config_json():
         logger.warning(f"  Could not write config: {e}")
 
 
+def _find_cognito_user_pool_id(pool_name: str):
+    next_token = None
+    while True:
+        kwargs = {"MaxResults": 60}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        response = cognito_idp_client.list_user_pools(**kwargs)
+        for pool in response.get("UserPools", []):
+            if pool.get("Name") == pool_name:
+                return pool["Id"]
+        next_token = response.get("NextToken")
+        if not next_token:
+            return None
+
+
+def delete_session_signing_key_secret() -> None:
+    """Delete HMAC session cookie signing key from Secrets Manager."""
+    logger.info("Deleting session signing key secret")
+    secret_name = SESSION_SIGNING_KEY_SECRET_NAME
+    try:
+        secretsmanager_client.delete_secret(
+            SecretId=secret_name,
+            ForceDeleteWithoutRecovery=True,
+        )
+        logger.info(f"  ✓ Deleted Secrets Manager secret: {secret_name}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("ResourceNotFoundException", "ResourceNotFound"):
+            logger.info(f"  Secret not found: {secret_name}")
+        else:
+            logger.warning(f"  Could not delete secret {secret_name}: {e}")
+
+
+def delete_cognito_user_pool() -> None:
+    """Delete Cognito User Pool created for Web UI authentication."""
+    logger.info("Deleting Cognito User Pool")
+    pool_name = project_name
+    user_pool_id = None
+
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        user_pool_id = (config.get("cognito_user_pool_id") or "").strip() or None
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+    if not user_pool_id:
+        try:
+            user_pool_id = _find_cognito_user_pool_id(pool_name)
+        except ClientError as error:
+            logger.warning(f"  Could not list Cognito User Pools: {error}")
+            return
+
+    if not user_pool_id:
+        logger.info(f"  Cognito User Pool not found (name={pool_name})")
+        return
+
+    try:
+        clients = cognito_idp_client.list_user_pool_clients(
+            UserPoolId=user_pool_id, MaxResults=60
+        )
+        for client in clients.get("UserPoolClients", []):
+            client_id = client["ClientId"]
+            try:
+                cognito_idp_client.delete_user_pool_client(
+                    UserPoolId=user_pool_id, ClientId=client_id
+                )
+                logger.info(f"  ✓ Deleted Cognito App Client: {client_id}")
+            except ClientError as error:
+                logger.warning(
+                    f"  Could not delete Cognito App Client {client_id}: {error}"
+                )
+
+        cognito_idp_client.delete_user_pool(UserPoolId=user_pool_id)
+        logger.info(f"  ✓ Deleted Cognito User Pool: {user_pool_id} (name={pool_name})")
+    except ClientError as error:
+        code = error.response.get("Error", {}).get("Code", "")
+        if code == "ResourceNotFoundException":
+            logger.info(f"  Cognito User Pool already deleted: {user_pool_id}")
+        else:
+            logger.warning(
+                f"  Could not delete Cognito User Pool {user_pool_id}: {error}"
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Uninstall AgentCore Harness infrastructure from installer.py"
@@ -1262,6 +1353,9 @@ def main():
         delete_knowledge_base_mcp_runtime(cfg)
         delete_knowledge_bases()
         delete_s3_vectors_store()
+
+        delete_cognito_user_pool()
+        delete_session_signing_key_secret()
 
         delete_iam_roles()
 
