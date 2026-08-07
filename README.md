@@ -28,11 +28,13 @@ flowchart TB
   INST[installer.py] -->|CreateHarness + VPC + S3 Files| H[AgentCore Harness]
   INST --> Mem[AgentCore Memory]
   INST --> KB[Bedrock KB<br/>S3 Vectors]
+  INST --> KbMcp[KB MCP Runtime<br/>+ IAM Gateway]
   INST --> S3[(S3 bucket<br/>skills/ · docs/ · images/ · sessions/)]
   INST --> VPC[VPC + NAT<br/>private subnets]
   Mem --> H
   S3 -->|S3 Files Access Point<br/>mount /mnt/workspace| H
   S3 -->|docs/ data source| KB
+  KbMcp -->|agentcore_gateway| H
   VPC --> H
 
   App[server.py + React] --> RH[run_harness]
@@ -45,7 +47,7 @@ flowchart TB
     Model[Bedrock model]
     Skills[S3/Git skills]
     BuiltIn[shell · file_operations]
-    Remote[remote_mcp · browser · code]
+    Remote[remote_mcp · gateway · browser · code]
     FS["/mnt/workspace S3 Files"]
     Loop --> Model
     Loop --> Skills
@@ -60,9 +62,9 @@ flowchart TB
 
 | 단계 | 경로 |
 |------|------|
-| 프로비저닝 | `installer.py` → S3 · skills · IAM · Memory · **S3 Vectors KB** · VPC · S3 Files · `CreateHarness` → `application/config.json` |
+| 프로비저닝 | `installer.py` → S3 · skills · IAM · Memory · **S3 Vectors KB** · **KB MCP Runtime + IAM Gateway** · VPC · S3 Files · `CreateHarness` → `application/config.json` |
 | 호출 | React UI → Skill/MCP/모델 · **이미지 첨부** → SSE `/api/tasks/{id}/chat` → `run_harness` → `invoke_harness` |
-| 삭제 | `uninstaller.py` → Harness · KB · S3 Vectors · S3 Files · VPC · Memory · IAM 정리 |
+| 삭제 | `uninstaller.py` → Harness · KB MCP Gateway/Runtime · KB · S3 Vectors · S3 Files · VPC · Memory · IAM 정리 |
 
 ---
 
@@ -85,7 +87,7 @@ pip install -r requirement.txt
 python uninstaller.py
 ```
 
-`application/config.json`은 gitignore됩니다. installer가 `HARNESS_ARN`, `s3_bucket`, VPC·S3 Files, **Knowledge Base / S3 Vectors** 필드를 채웁니다.
+`application/config.json`은 gitignore됩니다. installer가 `HARNESS_ARN`, `s3_bucket`, VPC·S3 Files, **Knowledge Base / S3 Vectors**, **KB MCP Runtime·Gateway ARN** 필드를 채웁니다.
 
 ---
 
@@ -252,15 +254,11 @@ skills/
 ├── docx/                 # Anthropic git skill (이름만으로 git URL 매핑)
 │   └── SKILL.md
 ├── pptx/ pdf/ xlsx/
-├── korea-weather/        # 커스텀 → S3 URI로 전달
-│   ├── SKILL.md
-│   └── scripts/
-│       ├── get_weather.py
-│       └── recall_home_location.py
-└── s3-sharing/           # 산출물 S3 업로드 + CloudFront 공유 URL
+└── korea-weather/        # 커스텀 → S3 URI로 전달
     ├── SKILL.md
     └── scripts/
-        └── upload_file_to_s3.py
+        ├── get_weather.py
+        └── recall_home_location.py
 ```
 
 각 스킬은 Anthropic Agent Skills 스펙의 `SKILL.md`(YAML frontmatter + 본문)를 가집니다.
@@ -327,7 +325,6 @@ Harness 런타임에서 S3 스킬은 보통 다음 경로에 마운트됩니다.
 
 ```text
 /home/.agents/skills/s3/korea-weather/scripts/get_weather.py
-/home/.agents/skills/s3/s3-sharing/scripts/upload_file_to_s3.py
 ```
 
 커스텀 스킬의 `SKILL.md`에는 **이 절대 경로**를 안내하세요. `$WORKING_DIR/skills/...`는 Harness S3 마운트에 없습니다.
@@ -360,6 +357,16 @@ HARNESS_MCP_CATALOG = {
             "remoteMcp": {"url": "https://knowledge-mcp.global.api.aws"}
         },
     },
+    "knowledge base": {
+        "type": "agentcore_gateway",
+        "name": "knowledge_base",
+        "config": {
+            "agentCoreGateway": {
+                "gatewayArn": "<KB MCP Gateway ARN>",
+                "outboundAuth": {"awsIam": {}},
+            }
+        },
+    },
     "browser-use": {
         "type": "agentcore_browser",
         "name": "browser",
@@ -373,40 +380,89 @@ HARNESS_MCP_CATALOG = {
 }
 ```
 
-`build_harness_tools(selected_labels)`가 위 카탈로그(+ 사용자 정의 JSON)를 합쳐 `tools` 배열을 만듭니다.
-
-### 사용자 정의 MCP
-
-사이드바 **사용자 설정**에 JSON을 넣으면 `user_defined_mcp.json`에 저장됩니다. 두 형식을 지원합니다.
-
-```json
-{
-  "mcpServers": {
-    "my_search": {
-      "url": "https://example.com/mcp",
-      "headers": {"Authorization": "Bearer …"}
-    }
-  }
-}
-```
-
-또는 Harness 네이티브:
-
-```json
-{
-  "tools": [
-    {
-      "type": "remote_mcp",
-      "name": "my_search",
-      "config": {"remoteMcp": {"url": "https://example.com/mcp"}}
-    }
-  ]
-}
-```
+`build_harness_tools(selected_labels)`가 위 카탈로그를 합쳐 `tools` 배열을 만듭니다.
 
 ### CreateHarness 기본 tools vs Invoke 시 override
 
-`installer`가 Harness를 만들 때 기본 tools(exa, aws_knowledge, browser, code)를 넣습니다. UI에서 고른 목록은 **호출마다** `InvokeHarness(tools=…)`로 override됩니다.
+`installer`가 Harness를 만들 때 기본 tools(exa, aws_knowledge, browser, code, knowledge_base)를 넣습니다. UI에서 고른 목록은 **호출마다** `InvokeHarness(tools=…)`로 override됩니다.
+
+### Knowledge Base MCP: Runtime + Gateway (IAM)
+
+프로젝트 Knowledge Base는 `MCP/knowledge-base/`를 **AgentCore Runtime(MCP protocol, IAM 인증)** 으로 배포합니다. 다만 Harness가 Runtime을 **직접 `remote_mcp`로 연결할 수 없어** 프로젝트 공용 **AgentCore Gateway**(`name={projectName}`)를 두고, KB Runtime을 Gateway **target**으로 붙인 뒤 Harness에는 `agentcore_gateway` 도구로 연결합니다. 이후 다른 Runtime MCP도 같은 Gateway에 target만 추가하면 됩니다.
+
+#### 왜 Gateway가 필요한가 (원인)
+
+1. AgentCore Runtime MCP 엔드포인트는 기본이 **IAM SigV4**입니다.  
+   URL 형태: `https://bedrock-agentcore.<region>.amazonaws.com/runtimes/<encoded-arn>/invocations?qualifier=DEFAULT`
+2. Harness 도구 타입 `remote_mcp`는 URL(+ optional headers)만 받으며, **AWS SigV4 서명을 하지 않습니다**.
+3. 그 결과 Runtime MCP URL을 `remote_mcp`로 등록하면 MCP 클라이언트 초기화 단계에서 **HTTP 403 Forbidden**이 납니다.
+
+```text
+# 실패 패턴 (직접 연결)
+Harness  --(unsigned HTTP)-->  AgentCore Runtime MCP
+                              → 403 Forbidden
+# 예: Failed to load tool 'knowledge_base' (type=remote_mcp)
+#     Client error '403 Forbidden' for url
+#     'https://bedrock-agentcore..../runtimes/.../invocations?qualifier=DEFAULT'
+```
+
+Harness 실행 역할에 `bedrock-agentcore:InvokeAgentRuntime`을 줘도, **요청 자체가 서명되지 않으면** Runtime 쪽 IAM 검증을 통과하지 못합니다. `remote_mcp`는 public/API-key MCP용이고, IAM Runtime MCP용 1급 도구 타입이 아닙니다.
+
+#### 해결: Gateway가 SigV4를 중계
+
+```text
+Harness execution role
+  --(SigV4 InvokeGateway)-->  AgentCore Gateway (authorizerType=AWS_IAM)
+  --(SigV4, GATEWAY_IAM_ROLE
+     service=bedrock-agentcore)-->  KB MCP AgentCore Runtime
+  --> retrieve(keyword, user_id) → Bedrock Retrieve (owner filter)
+```
+
+| 구간 | 인증 | 담당 |
+|------|------|------|
+| Harness → Gateway | SigV4 (`InvokeGateway`) | Harness execution role + tool `outboundAuth.awsIam` |
+| Gateway → Runtime MCP | SigV4 (`InvokeAgentRuntime`) | Gateway service role + target `GATEWAY_IAM_ROLE` / `iamCredentialProvider` |
+| Runtime → Bedrock KB | Runtime task role | `bedrock:Retrieve` (+ metadata `owner` listContains) |
+
+#### installer가 만드는 리소스
+
+`installer.py` → `deploy_knowledge_base_mcp()`:
+
+| 리소스 | 이름 예 | 역할 |
+|--------|---------|------|
+| ECR + Runtime | `knowledge_base_of_harness_skills` | `MCP/knowledge-base` Docker, `serverProtocol=MCP` |
+| Runtime IAM role | `role-kb-mcp-for-…` | KB Retrieve, ECR pull, logs |
+| Gateway | `{projectName}` (예: `harness-skills`) | 프로젝트 공용 inbound `AWS_IAM` (KB 외 MCP 타깃도 공유) |
+| Gateway IAM role | `role-agentcore-gateway-for-…` | Runtime들에 `InvokeAgentRuntime` |
+| Gateway target | `knowledge-base` | `mcp.mcpServer.endpoint` = Runtime MCP URL, outbound IAM SigV4 |
+| Runtime resource policy | (PutResourcePolicy) | Gateway(·Harness) principal의 Invoke 허용 |
+
+`application/config.json`에 저장되는 주요 키:
+
+- `knowledge_base_mcp_runtime_arn` / `knowledge_base_mcp_url`
+- `agentcore_gateway_arn` / `agentcore_gateway_id` / `agentcore_gateway_role`
+- `knowledge_base_mcp_gateway_target_id`
+
+UI·CreateHarness tools는 **프로젝트 Gateway ARN**을 사용합니다 (`mcp_config._knowledge_base_mcp_tool`).
+
+#### Harness tool 형태
+
+```python
+{
+    "type": "agentcore_gateway",
+    "name": "knowledge_base",
+    "config": {
+        "agentCoreGateway": {
+            "gatewayArn": config["agentcore_gateway_arn"],
+            "outboundAuth": {"awsIam": {}},
+        }
+    },
+}
+```
+
+MCP 도구 `retrieve(keyword, user_id)`는 **별도 Runtime**이라 Harness 프로세스 env(`AGENTCORE_USER_ID`)를 공유하지 않습니다. 호출 시 `user_id`를 필수로 넘겨 `owner` metadata `listContains` 필터를 겁니다.
+
+관련 코드: `MCP/knowledge-base/`, `installer.py` (`deploy_knowledge_base_mcp`, `ensure_project_agentcore_gateway`, `ensure_knowledge_base_gateway_target`), `application/mcp_config.py`.
 
 ---
 
@@ -465,9 +521,10 @@ response = client.invoke_harness(**invoke_kwargs)
 | **한도** | `maxIterations=20`, `maxTokens=50000`, `timeoutSeconds=300` |
 | **네트워크** | `VPC` + private subnet + NAT |
 | **파일시스템** | S3 Files → `/mnt/workspace` |
-| **기본 tools** | exa, aws_knowledge, browser, code |
+| **기본 tools** | exa, aws_knowledge, browser, code, **knowledge_base (Gateway)** |
 | **Skills** | CreateHarness 시 미설정 → Invoke 시 UI 선택으로 주입 |
 | **Knowledge Base** | S3 Vectors + S3 `docs/` 데이터 소스 (Titan Embed v2) |
+| **KB MCP** | Runtime(`knowledge_base_of_…`) + 프로젝트 Gateway(`{projectName}`) target `knowledge-base` → `agentcore_gateway` |
 
 ---
 
@@ -475,8 +532,8 @@ response = client.invoke_harness(**invoke_kwargs)
 
 | 도구 타입 | 설명 |
 |---|---|
-| `remote_mcp` | URL로 원격 MCP 연결 |
-| `agentcore_gateway` | Gateway ARN + IAM/OAuth |
+| `remote_mcp` | URL로 원격 MCP 연결 (SigV4 없음 → **IAM AgentCore Runtime MCP에는 사용 불가**) |
+| `agentcore_gateway` | Gateway ARN + IAM/OAuth (KB MCP는 이 경로) |
 | `agentcore_browser` | 관리형 브라우저 |
 | `agentcore_code_interpreter` | 샌드박스 코드 실행 |
 | `inline_function` | 클라이언트 사이드 / HITL |
