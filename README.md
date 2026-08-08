@@ -517,10 +517,13 @@ HARNESS_MCP_CATALOG = {
 ```
 
 `build_harness_tools(selected_labels)`가 위 카탈로그를 합쳐 `tools` 배열을 만듭니다.
+`knowledge base`와 `artifact-share`는 **하나의 프로젝트 IAM Gateway**에 연결됩니다 (라벨만 다르고 Gateway ARN은 공유).
+
+**기본 MCP**: `knowledge base` · `artifact-share`는 `BASE_MCP_SERVERS`로 UI 기본 선택·`favorite_tools.json`·매 호출의 `tools`에 **항상** 포함됩니다 (`share_artifact` / `retrieve`가 system prompt에 필수).
 
 ### CreateHarness 기본 tools vs Invoke 시 override
 
-`installer`가 Harness를 만들 때 기본 tools(exa, aws_knowledge, browser, code, knowledge_base)를 넣습니다. UI에서 고른 목록은 **호출마다** `InvokeHarness(tools=…)`로 override됩니다.
+`installer`가 Harness를 만들 때 기본 tools(exa, aws_knowledge, browser, code, knowledge_base)를 넣습니다. UI에서 고른 목록은 **호출마다** `InvokeHarness(tools=…)`로 override되지만, Gateway MCP(`knowledge base` / `artifact-share`)는 항상 병합됩니다.
 
 ### Knowledge Base MCP: Runtime + Gateway (IAM)
 
@@ -657,7 +660,7 @@ response = client.invoke_harness(**invoke_kwargs)
 | **한도** | `maxIterations=20`, `maxTokens=50000`, `timeoutSeconds=300` |
 | **네트워크** | `VPC` + private subnet + NAT |
 | **파일시스템** | S3 Files → `/mnt/workspace` |
-| **기본 tools** | exa, aws_knowledge, browser, code, **knowledge_base (Gateway)** |
+| **기본 tools** | exa, aws_knowledge, browser, code, **knowledge_base Gateway** (`knowledge base` + `artifact-share` 항상 포함) |
 | **Skills** | CreateHarness 시 미설정 → Invoke 시 UI 선택으로 주입 |
 | **Knowledge Base** | S3 Vectors + S3 `docs/` 데이터 소스 (Titan Embed v2) |
 | **KB MCP** | Runtime(`knowledge_base_of_…`) + 프로젝트 Gateway(`{projectName}`) target `knowledge-base` → `agentcore_gateway` |
