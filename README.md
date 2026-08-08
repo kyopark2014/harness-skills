@@ -382,7 +382,7 @@ skill-creator가 만든 스킬은 사용자 세션 스토리지에 저장됩니�
 |------|------|
 | 작성 위치 (런타임) | `/mnt/workspace/{user_id}/skills/<name>/` |
 | S3 Files 대응 | `s3://{bucket}/agentcore-sessions/{user_id}/skills/<name>/` |
-| UI 목록 | 로컬 mount 또는 S3에서 `SKILL.md` 있는 디렉터리 스캔 |
+| UI 목록 | S3 `agentcore-sessions/{user}/skills/`에서 `SKILL.md` 스캔 (Web UI는 S3 Files 마운트 없음) |
 | Invoke 직전 | `materialize_user_skill_for_harness`가 **clean copy** 생성 |
 
 판별 (`build_harness_skills`):

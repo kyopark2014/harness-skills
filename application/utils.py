@@ -21,10 +21,14 @@ favorite_tools_path = os.path.join(script_dir, "favorite_tools.json")
 
 
 def _default_session_storage_dir() -> str:
-    """Prefer shared S3 Files mount (AgentCore /mnt/workspace or ECS /mnt/app-data)."""
-    for candidate in ("/mnt/workspace", "/mnt/app-data"):
-        if os.path.isdir(candidate):
-            return candidate
+    """Resolve session storage for local helpers.
+
+    Harness runtime mounts ``/mnt/workspace`` (``agentcore-sessions/``).
+    The Web UI in this project does not mount S3 Files; skills are listed via
+    S3 API. Prefer workspace when present (e.g. tools run inside the runtime).
+    """
+    if os.path.isdir("/mnt/workspace"):
+        return "/mnt/workspace"
     return os.path.join(script_dir, ".session_storage")
 
 
@@ -100,7 +104,7 @@ bedrock_region = config["region"]
 projectName = config["projectName"]
 accountId = config["accountId"]
 s3_bucket = config.get("s3_bucket") or (
-    f"storage-for-rag-project-{accountId}-{bedrock_region}"
+    f"storage-for-{projectName}-{accountId}-{bedrock_region}"
 )
 sharing_url = (config.get("sharing_url") or "").rstrip("/")
 knowledge_base_id = config.get("knowledge_base_id") or ""
@@ -125,13 +129,18 @@ def sanitize_user_path_segment(user_id: str | None) -> str | None:
 
 
 def get_user_skills_dir(user_id: str | None) -> str:
-    """Absolute path to {SESSION_STORAGE_DIR}/{user_id}/skills (does not create)."""
+    """Logical local path for user skills (Harness runtime mount only).
+
+    Web UI discovers skill-creator skills via S3
+    (``agentcore-sessions/{user}/skills/``), not a local app mount.
+    """
     segment = sanitize_user_path_segment(user_id) or "default"
-    return os.path.join(SESSION_STORAGE_DIR, segment, "skills")
+    root = "/mnt/workspace" if os.path.isdir("/mnt/workspace") else SESSION_STORAGE_DIR
+    return os.path.join(root, segment, "skills")
 
 
 def ensure_user_skills_dir(user_id: str | None) -> str:
-    """Create {SESSION_STORAGE_DIR}/{user_id}/skills if needed and return it."""
+    """Create user skills dir under the Harness workspace mount when available."""
     skills_dir = get_user_skills_dir(user_id)
     os.makedirs(skills_dir, exist_ok=True)
     logger.info("user skills dir ready: %s", skills_dir)
