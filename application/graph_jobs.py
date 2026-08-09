@@ -287,21 +287,7 @@ def _run_pipeline(user_id: str, force: bool = False) -> None:
             if force:
                 cmd.append("--full")
             logger.info("+ %s (cwd=%s)", " ".join(cmd), _GRAPH_DIR)
-            env = os.environ.copy()
-            try:
-                from application.task_store_persistence import working_db_path
-
-                env["TASKS_DB_PATH"] = working_db_path()
-            except Exception:
-                logger.exception("Could not resolve TASKS_DB_PATH for graph pipeline")
-            if "SESSION_STORAGE_DIR" not in env:
-                try:
-                    from application import utils as app_utils
-
-                    env["SESSION_STORAGE_DIR"] = app_utils.SESSION_STORAGE_DIR
-                except Exception:
-                    pass
-            subprocess.check_call(cmd, cwd=str(_GRAPH_DIR), env=env)
+            subprocess.check_call(cmd, cwd=str(_GRAPH_DIR))
         fingerprint = _compute_source_fingerprint(user_id)
         _save_fingerprint(user_id, fingerprint)
         with _lock:
@@ -325,3 +311,28 @@ def _run_pipeline(user_id: str, force: bool = False) -> None:
             # Failures do not set last_success_at — retries allowed immediately.
             _running_users.discard(user_id)
         logger.exception("Graph pipeline failed for user=%s", user_id)
+
+
+def republish_graph_html(user_id: str, *, pattern: str | None = None) -> bool:
+    """Re-render out/graph.html from existing graph.json using the given pattern."""
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return False
+
+    from application import utils
+
+    out_dir = Path(utils.get_user_graph_dir(user_id)) / "out"
+    graph_root = str(_GRAPH_DIR)
+    if graph_root not in sys.path:
+        sys.path.insert(0, graph_root)
+
+    from lib.out_graphs import republish_html_from_json
+
+    pid = pattern or utils.get_graph_pattern(user_id)
+    os.environ.setdefault("SESSION_STORAGE_DIR", utils.SESSION_STORAGE_DIR)
+    written = republish_html_from_json(out_dir, user_id=user_id, pattern=pid)
+    if written is None:
+        logger.info("No graph.json to republish for %s (pattern=%s)", user_id, pid)
+        return False
+    logger.info("Republished graph HTML for %s pattern=%s → %s", user_id, pid, written)
+    return True
