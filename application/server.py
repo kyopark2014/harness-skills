@@ -15,6 +15,12 @@ from application.api.routes_files import router as files_router
 from application.api.routes_rag import router as rag_router
 from application.api.routes_graph import router as graph_router
 from application.task_store import init_db
+from application.task_store_persistence import (
+    flush_persist,
+    persistence_enabled,
+    persistent_db_path,
+    restore_tasks_db,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,9 +35,15 @@ _WEB_DIST = os.path.join(_APPLICATION_DIR, "web", "dist")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    restore_tasks_db()
     init_db()
-    logger.info("Harness UI task store ready")
+    if persistence_enabled():
+        logger.info("Task store persistence enabled: %s", persistent_db_path())
+    else:
+        logger.info("Task store using local SQLite (per-user durable under session storage)")
     yield
+    flush_persist()
+    logger.info("Task store shutdown persist complete")
 
 
 app = FastAPI(title="Harness UI", version="1.0.0", lifespan=lifespan)
